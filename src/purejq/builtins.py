@@ -305,10 +305,12 @@ def _fromjson(input, env):
     if s in ("nan", "-nan", "NaN", "-NaN"):
         yield float("nan")
         return
-    if len(input) >= 20002 and _nesting_depth(input) > 10000:
-        # deterministic counterpart of jq's MAX_PARSING_DEPTH; Python's own
-        # RecursionError threshold varies between interpreter versions
-        raise JqError("Exceeds depth limit for parsing")
+    if len(input) > 2000 and _nesting_depth(input) > 1000:
+        # json.loads parses recursively on the C stack, which aborts the
+        # interpreter on some Python versions long before jq's depth limit;
+        # deep documents go through an explicit-stack parser instead
+        yield _parse_deep_json(input)
+        return
     try:
         yield json.loads(input)
     except RecursionError:
@@ -337,6 +339,125 @@ def _nesting_depth(s):
         elif ch == "]" or ch == "}":
             depth -= 1
     return deepest
+
+
+_NUMBER_RE = _re.compile(r"-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][-+]?\d+)?")
+_MAX_PARSING_DEPTH = 10000  # matches jq's src/jv_parse.c
+
+
+def _parse_deep_json(s):
+    """Iterative JSON parser (explicit stack), used for deeply nested input."""
+    from json.decoder import scanstring
+
+    def bad(i, why="Invalid JSON"):
+        return JqError("%s at character %d (while parsing deep JSON)" % (why, i))
+
+    i, n = 0, len(s)
+    stack = []  # (container, pending_object_key)
+    result = []
+
+    def attach(v, i):
+        if not stack:
+            result.append(v)
+            return
+        container, key = stack[-1]
+        if isinstance(container, list):
+            container.append(v)
+        else:
+            stack[-1] = (container, None)
+            container[key] = v
+
+    expect_value = True
+    while True:
+        while i < n and s[i] in " \t\n\r":
+            i += 1
+        if i >= n:
+            if not expect_value and not stack and result:
+                return result[0]
+            raise bad(i, "Unexpected end of input")
+        if not expect_value and not stack and result:
+            raise bad(i, "Trailing data")
+        ch = s[i]
+        if expect_value:
+            if ch == "[" or ch == "{":
+                if len(stack) >= _MAX_PARSING_DEPTH:
+                    raise JqError("Exceeds depth limit for parsing")
+                container = [] if ch == "[" else {}
+                attach(container, i)
+                stack.append((container, None))
+                i += 1
+                # tolerate immediately-closed containers
+                while i < n and s[i] in " \t\n\r":
+                    i += 1
+                if i < n and ((ch == "[" and s[i] == "]") or (ch == "{" and s[i] == "}")):
+                    stack.pop()
+                    i += 1
+                    expect_value = False
+                elif ch == "{":
+                    expect_value = False  # expect a key next
+                    continue
+                continue
+            if ch == '"':
+                v, i = scanstring(s, i + 1)
+                attach(v, i)
+                expect_value = False
+                continue
+            m = _NUMBER_RE.match(s, i)
+            if m:
+                text = m.group()
+                attach(int(text) if _re.match(r"^-?\d+$", text) else float(text), i)
+                i = m.end()
+                expect_value = False
+                continue
+            for lit, v in (("true", True), ("false", False), ("null", None)):
+                if s.startswith(lit, i):
+                    attach(v, i)
+                    i += len(lit)
+                    expect_value = False
+                    break
+            else:
+                raise bad(i)
+            continue
+        # after a value (or awaiting an object key)
+        if stack and isinstance(stack[-1][0], dict) and stack[-1][1] is None and ch == '"':
+            key, i = scanstring(s, i + 1)
+            while i < n and s[i] in " \t\n\r":
+                i += 1
+            if i >= n or s[i] != ":":
+                raise bad(i, "Expected ':'")
+            stack[-1] = (stack[-1][0], key)
+            i += 1
+            expect_value = True
+            continue
+        if ch == ",":
+            if not stack:
+                raise bad(i)
+            i += 1
+            if isinstance(stack[-1][0], dict):
+                while i < n and s[i] in " \t\n\r":
+                    i += 1
+                if i >= n or s[i] != '"':
+                    raise bad(i, "Expected object key")
+                expect_value = False
+            else:
+                expect_value = True
+            continue
+        if ch == "]" or ch == "}":
+            if not stack:
+                raise bad(i)
+            container, key = stack.pop()
+            wanted = "]" if isinstance(container, list) else "}"
+            if ch != wanted or key is not None:
+                raise bad(i)
+            i += 1
+            if not stack:
+                while i < n and s[i] in " \t\n\r":
+                    i += 1
+                if i < n:
+                    raise bad(i, "Trailing data")
+                return result[0]
+            continue
+        raise bad(i)
 
 
 @_register("explode", 0)

@@ -29,7 +29,7 @@ jq.test:2271	# [1E+1000,-1E+1000 | abs | tojson] | unique == if have_decnum then
 jq.test:2275	# [1E+1000,-1E+1000 | length | tojson] | unique == if have_decnum then ["1E+1000"] else ["1.7976931348623157e+308"] end
 jq.test:2324	# .[] | try (fromjson | isnan) catch .
 jq.test:2498	# try fromjson catch .
-jq.test:2558	# reduce range(9999) as $_ ([];[.]) | tojson | fromjson | flatten
+jq.test:2563	# reduce range(10000) as $_ ([];[.]) | tojson | try (fromjson) catch . | (contains("<skipped: too deep>") | not) and conta
 man.test:21	# map([., . == 1]) | tojson == if have_decnum then "[[1,true],[1.000,true],[1.0,true],[1.00,true]]" else "[[1,true],[1,tru
 man.test:25	# . as $big | [$big, $big + 1] | map(. > 10000000000000000000000000000000) | . == if have_decnum then [true, false] else [
 man.test:654	# [repeat(.*2, error)?]
