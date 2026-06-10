@@ -305,12 +305,38 @@ def _fromjson(input, env):
     if s in ("nan", "-nan", "NaN", "-NaN"):
         yield float("nan")
         return
+    if len(input) >= 20002 and _nesting_depth(input) > 10000:
+        # deterministic counterpart of jq's MAX_PARSING_DEPTH; Python's own
+        # RecursionError threshold varies between interpreter versions
+        raise JqError("Exceeds depth limit for parsing")
     try:
         yield json.loads(input)
     except RecursionError:
         raise JqError("Exceeds depth limit for parsing")
     except ValueError as e:
         raise JqError("%s cannot be parsed as JSON: %s" % (describe(input), e))
+
+
+def _nesting_depth(s):
+    depth = deepest = 0
+    in_str = esc = False
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "[" or ch == "{":
+            depth += 1
+            if depth > deepest:
+                deepest = depth
+        elif ch == "]" or ch == "}":
+            depth -= 1
+    return deepest
 
 
 @_register("explode", 0)
