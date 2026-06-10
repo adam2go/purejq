@@ -121,7 +121,8 @@ python3 tools/bench.py 100000
 ```
 
 Reference numbers (M-series MacBook, CPython 3.13, 100k objects):
-field-access streams ~19 ms, map+aggregate ~46 ms, group_by ~560 ms.
+field-access streams ~11 ms, map+aggregate ~24 ms, group_by ~120 ms,
+transform+sort ~220 ms.
 
 ## Compatibility
 

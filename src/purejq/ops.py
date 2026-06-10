@@ -43,6 +43,9 @@ def truthy(v):
     return v is not None and v is not False
 
 
+_RANKS = {int: 3, float: 3, str: 4, list: 5, dict: 6, type(None): 0}
+
+
 def _rank(v):
     if v is None:
         return 0
@@ -50,13 +53,7 @@ def _rank(v):
         return 1
     if v is True:
         return 2
-    if isinstance(v, (int, float)):
-        return 3
-    if isinstance(v, str):
-        return 4
-    if isinstance(v, list):
-        return 5
-    return 6
+    return _RANKS[type(v)]
 
 
 def jq_cmp(a, b):
@@ -69,6 +66,11 @@ def values_equal(a, b):
 
 
 def _cmp(a, b, depth, too_deep_msg):
+    # fast path for the overwhelmingly common scalar comparisons
+    # (identity shortcuts would bypass the depth guard jq guarantees)
+    ta, tb = type(a), type(b)
+    if ta is tb and (ta is int or ta is str):
+        return (a > b) - (a < b)
     if depth > 10000:
         raise JqError(too_deep_msg)
     ra, rb = _rank(a), _rank(b)

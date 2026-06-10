@@ -7,9 +7,6 @@ from .compiler import Env, FuncVal
 from .parser import parse
 
 PRELUDE = r"""
-def not: if . then false else true end;
-def select(f): if f then . else empty end;
-def map(f): [.[] | f];
 def values: select(. != null);
 def nulls: select(. == null);
 def booleans: select(type == "boolean");

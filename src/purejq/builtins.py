@@ -41,6 +41,35 @@ def _empty(input, env):
     return iter(())
 
 
+@_register("not", 0)
+def _not(input, env):
+    yield input is None or input is False
+
+
+@_register("select", 1)
+def _select(input, env, f):
+    for v in f.vals(input):
+        if v is not None and v is not False:
+            yield input
+
+
+def _select_path(input, path, env, f):
+    for v in f.vals(input):
+        if v is not None and v is not False:
+            yield path, input
+
+
+PY_BUILTINS_PATH[("select", 1)] = _select_path
+
+
+@_register("map", 1)
+def _map(input, env, f):
+    out = []
+    for x in ops.iterate_value(input):
+        out.extend(f.vals(x))
+    yield out
+
+
 @_register("error", 0)
 def _error(input, env):
     raise JqError(input)
@@ -1055,30 +1084,66 @@ def _require_array(input, what):
     return input
 
 
+def _natively_sortable(values):
+    """True when Python's own ordering of these values matches jq's
+    (uniformly all strings, or all bool-free nan-free numbers)."""
+    kind = None
+    for v in values:
+        t = type(v)
+        if t is int:
+            k = "n"
+        elif t is float:
+            if math.isnan(v):
+                return False
+            k = "n"
+        elif t is str:
+            k = "s"
+        else:
+            return False
+        if kind is None:
+            kind = k
+        elif kind != k:
+            return False
+    return True
+
+
 @_register("sort", 0)
 def _sort(input, env):
-    yield sorted(_require_array(input, "sorted"), key=_CMP_KEY)
+    arr = _require_array(input, "sorted")
+    if _natively_sortable(arr):
+        yield sorted(arr)
+    else:
+        yield sorted(arr, key=_CMP_KEY)
 
 
 def _by_key(f, x):
     return list(f.vals(x))
 
 
+def _sorted_keyed(arr, f):
+    """[(key, x)] sorted by jq order; key is the [f] list jq sorts by."""
+    keyed = [(_by_key(f, x), x) for x in arr]
+    if all(len(k) == 1 for k, _x in keyed) and _natively_sortable(
+            [k[0] for k, _x in keyed]):
+        keyed.sort(key=lambda kv: kv[0][0])
+    else:
+        keyed.sort(key=lambda kv: _CMP_KEY(kv[0]))
+    return keyed
+
+
 @_register("sort_by", 1)
 def _sort_by(input, env, f):
     arr = _require_array(input, "sorted")
-    yield sorted(arr, key=lambda x: _CMP_KEY(_by_key(f, x)))
+    yield [x for _k, x in _sorted_keyed(arr, f)]
 
 
 @_register("group_by", 1)
 def _group_by(input, env, f):
     arr = _require_array(input, "grouped")
-    keyed = [( _by_key(f, x), x) for x in arr]
-    keyed.sort(key=lambda kv: _CMP_KEY(kv[0]))
     out = []
     cur_key = None
     cur = None
-    for k, x in keyed:
+    for k, x in _sorted_keyed(arr, f):
         if cur is None or jq_cmp(k, cur_key) != 0:
             cur = [x]
             cur_key = k
@@ -1090,7 +1155,16 @@ def _group_by(input, env, f):
 
 @_register("unique", 0)
 def _unique(input, env):
-    arr = sorted(_require_array(input, "sorted"), key=_CMP_KEY)
+    arr = _require_array(input, "sorted")
+    if _natively_sortable(arr):
+        arr = sorted(arr)
+        out = []
+        for x in arr:
+            if not out or out[-1] != x:
+                out.append(x)
+        yield out
+        return
+    arr = sorted(arr, key=_CMP_KEY)
     out = []
     for x in arr:
         if not out or jq_cmp(out[-1], x) != 0:
@@ -1101,11 +1175,9 @@ def _unique(input, env):
 @_register("unique_by", 1)
 def _unique_by(input, env, f):
     arr = _require_array(input, "sorted")
-    keyed = [(_by_key(f, x), x) for x in arr]
-    keyed.sort(key=lambda kv: _CMP_KEY(kv[0]))
     out = []
     last_key = None
-    for k, x in keyed:
+    for k, x in _sorted_keyed(arr, f):
         if not out or jq_cmp(k, last_key) != 0:
             out.append(x)
             last_key = k

@@ -7,6 +7,8 @@ compilation `g(input, path, env) -> iterator of (path, value)` used by
 """
 from __future__ import annotations
 
+import itertools
+
 from . import ops
 from .encoder import encode
 from .errors import JqBreak, JqError
@@ -155,8 +157,18 @@ def _v_emptyarray(ast):
 
 
 def _v_field(ast):
-    base = compile_v(ast[1])
     name = ast[2]
+    if ast[1][0] == "identity":  # plain `.foo`: skip the base generator
+        def vfn(input, env):
+            if input is None:
+                yield None
+            elif isinstance(input, dict):
+                yield input.get(name)
+            else:
+                raise JqError('Cannot index %s with %s'
+                              % (type_name(input), ops.describe(name)))
+        return vfn
+    base = compile_v(ast[1])
 
     def vfn(input, env):
         for b in base(input, env):
@@ -194,6 +206,10 @@ def _v_slice(ast):
 
 
 def _v_iterate(ast):
+    if ast[1][0] == "identity":  # plain `.[]`
+        def vfn(input, env):
+            return ops.iterate_value(input)
+        return vfn
     base = compile_v(ast[1])
 
     def vfn(input, env):
@@ -307,17 +323,18 @@ def _v_alt(ast):
 
     def vfn(input, env):
         found = False
-        it = a(input, env)
-        while True:
-            try:
-                v = next(it)
-            except StopIteration:
-                break
-            except JqError:
-                break
-            if truthy(v):
-                found = True
-                yield v
+        try:
+            it = a(input, env)
+            while True:
+                try:
+                    v = next(it)
+                except StopIteration:
+                    break
+                if truthy(v):
+                    found = True
+                    yield v
+        except JqError:
+            pass
         if not found:
             for v in b(input, env):
                 yield v
@@ -337,7 +354,10 @@ def _v_opt(ast):
     body = compile_v(ast[1])
 
     def vfn(input, env):
-        it = body(input, env)
+        try:
+            it = body(input, env)
+        except JqError:
+            return
         while True:
             try:
                 v = next(it)
@@ -354,7 +374,13 @@ def _v_try(ast):
     handler = compile_v(ast[2]) if ast[2] is not None else None
 
     def vfn(input, env):
-        it = body(input, env)
+        try:
+            it = body(input, env)
+        except JqError as e:
+            if handler is not None:
+                for hv in handler(e.value, env):
+                    yield hv
+            return
         while True:
             try:
                 v = next(it)
@@ -411,6 +437,32 @@ def _v_format(ast):
 
 def _v_object(ast):
     entries = [(compile_v(k), compile_v(v)) for k, v in ast[1]]
+
+    if all(k[0] == "const" and isinstance(k[1], str) for k, _v in ast[1]):
+        # constant keys (the overwhelmingly common case): evaluate the value
+        # columns directly instead of recursing through generator products
+        names = [k[1] for k, _v in ast[1]]
+        vcs = [vc for _kc, vc in entries]
+
+        def vfn(input, env):
+            cols = []
+            for vc in vcs:
+                col = list(vc(input, env))
+                if not col:  # an empty entry produces no objects at all
+                    return
+                cols.append(col)
+            if all(len(c) == 1 for c in cols):
+                d = {}
+                for name, c in zip(names, cols):
+                    d[name] = c[0]
+                yield d
+                return
+            for combo in itertools.product(*cols):
+                d = {}
+                for name, v in zip(names, combo):
+                    d[name] = v
+                yield d
+        return vfn
 
     def vfn(input, env):
         def go(i, acc):
@@ -1020,7 +1072,10 @@ def _p_opt(ast):
     body = compile_p(ast[1])
 
     def pfn(input, path, env):
-        it = body(input, path, env)
+        try:
+            it = body(input, path, env)
+        except JqError:
+            return
         while True:
             try:
                 r = next(it)
@@ -1032,20 +1087,7 @@ def _p_opt(ast):
     return pfn
 
 
-def _p_try(ast):
-    body = compile_p(ast[1])
-
-    def pfn(input, path, env):
-        it = body(input, path, env)
-        while True:
-            try:
-                r = next(it)
-            except StopIteration:
-                return
-            except JqError:
-                return
-            yield r
-    return pfn
+_p_try = _p_opt
 
 
 def _p_break(ast):
