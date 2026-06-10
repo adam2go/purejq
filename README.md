@@ -1,158 +1,114 @@
 # purejq
 
 [![CI](https://github.com/adam2go/purejq/actions/workflows/ci.yml/badge.svg)](https://github.com/adam2go/purejq/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14%20%7C%20PyPy-blue)](https://github.com/adam2go/purejq/blob/main/.github/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/purejq)](https://pypi.org/project/purejq/)
+[![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14%20%7C%20PyPy-blue)](.github/workflows/ci.yml)
 [![Conformance](https://img.shields.io/badge/jq%20test%20suite-96.2%25-brightgreen)](tests/conformance/expected_failures.txt)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A pure Python implementation of [jq](https://jqlang.github.io/jq/), the
-command-line JSON processor — in the spirit of [gojq](https://github.com/itchyny/gojq) (Go)
-and [jaq](https://github.com/01mf02/jaq) (Rust).
-
-**No C extension. No binary. If Python runs, purejq runs** — including
-Pyodide/WASM, AWS Lambda layers you can't compile in, restricted sandboxes,
-and anywhere `pip install` is all you get.
+**[jq](https://jqlang.github.io/jq/), as a pure Python library.** No C extension, no
+binary: if Python runs, purejq runs — Pyodide/WASM, sandboxes, Lambda,
+anywhere `pip install` is all you get.
 
 ```sh
-$ echo '{"users":[{"name":"alice","age":30},{"name":"bob","age":25}]}' \
-    | purejq '.users[] | select(.age > 26) | .name'
-"alice"
+pip install purejq
 ```
-
-## Why another jq?
-
-| | C jq | `jq` PyPI package | **purejq** |
-|---|---|---|---|
-| needs a compiled binary / wheel | yes | yes (C bindings) | **no** |
-| runs on Pyodide / WASM | no | no | **yes** |
-| embeds in Python (call functions, pass dicts) | no | partially | **yes** |
-| arbitrary-precision integers | no | no | **yes** |
-
-The existing [`jq` PyPI package](https://pypi.org/project/jq/) is excellent
-when you can ship compiled wheels. purejq is for when you can't — or when you
-want to read and hack the implementation in one afternoon.
-
-## Install
-
-```sh
-pip install purejq            # nothing but Python
-pip install 'purejq[speed]'   # + orjson for faster JSON parsing in the CLI
-```
-
-*(Not yet published to PyPI — install from source for now: `pip install git+https://github.com/adam2go/purejq`)*
-
-## Usage
-
-### CLI (drop-in for common jq usage)
-
-```sh
-purejq '.foo[] | select(.bar > 2)' data.json
-cat data.json | purejq -r '.items[].name'     # raw output
-purejq -n 'range(3) | . * 2'                  # null input
-purejq -c --arg name alice '{user: $name}'    # compact output, variables
-```
-
-Supported flags: `-n -r -j -c -s -e -f --arg --argjson`.
-
-### Python API
 
 ```python
 import purejq
 
-# one-shot
-purejq.first(".a.b", {"a": {"b": 42}})          # 42
-purejq.all_outputs(".[] | . * 2", [1, 2, 3])    # [2, 4, 6]
-
-# compile once, run on many inputs (the fast way)
-prog = purejq.compile("[.[] | select(.score > 50)] | length")
-for batch in batches:
-    print(prog.first(batch))
-
-# results are a lazy iterator — infinite streams are fine
-prog = purejq.compile("repeat(. * 2)")
-it = prog.run(1)
-next(it), next(it), next(it)                    # 2, 4, 8
+purejq.first(".users[] | select(.age > 26) | .name", data)   # work on your dicts directly
+prog = purejq.compile("group_by(.team) | map(length)")        # compile once, run many
+prog.first(batch)
 ```
-
-## Conformance: measured, not claimed
-
-purejq is tested against **jq's own official test suite** (vendored in
-[tests/conformance/](tests/conformance/)): **751 of 781 cases pass (96.2%)**.
-
-Every remaining failure is listed with its reason in
-[expected_failures.txt](tests/conformance/expected_failures.txt) and falls in
-one of these known buckets:
-
-- **module system** (`import` / `include` / `modulemeta`) — not implemented yet
-- **number representation** — Python integers are arbitrary-precision, so
-  `13911860366432393` stays exact instead of rounding like a C double. This is
-  the same deliberate difference gojq made; for AI/data pipelines exactness is
-  usually what you want
-- **error-message wording** in a handful of edge cases (e.g. Python's JSON
-  parser phrases syntax errors differently)
-
-Implemented and conformance-tested: the full expression language (paths,
-all assignment operators, `reduce`/`foreach`, `try`/`catch`, `label`/`break`,
-destructuring with `?//` alternatives, string interpolation, all `@formats`),
-regex builtins (`test`/`match`/`capture`/`scan`/`sub`/`gsub` via Python `re`),
-`tostream`/`fromstream`, date builtins, SQL-ish builtins, and jq 1.8 additions
-(`pick`, `abs`, `toboolean`, `trim`, `have_decnum`, …).
-
-## Performance
-
-Honest framing: a pure Python jq will not beat the C implementation on raw
-throughput. The design keeps it in usable territory:
-
-- **compile once, run many** — programs compile to Python generator closures;
-  evaluation never re-walks the AST
-- **fully lazy streams** — `first(f)`, `limit`, and infinite generators cost
-  only what they consume
-- **C-speed JSON parsing** — input parsing uses Python's C-backed `json`
-  module (or [orjson](https://github.com/ijl/orjson) if installed via
-  `purejq[speed]`), so the parse-heavy part of typical workloads is not
-  written in Python at all
-- **PyPy as the escape hatch** — purejq is tested on PyPy in CI; interpreter
-  workloads typically run ~10x faster there
-
-Run the benchmark yourself (compares against the system `jq` if installed):
 
 ```sh
-python3 tools/bench.py 100000
+echo '{"a":[1,2,3]}' | purejq '.a | map(. * 2)'               # familiar CLI, same flags
 ```
 
-Reference numbers (M-series MacBook, CPython 3.13, 100k objects):
-field-access streams ~11 ms, map+aggregate ~24 ms, group_by ~120 ms,
-transform+sort ~220 ms.
+## Why purejq
+
+- **Embedding jq in Python? purejq is 6–40x faster than the C bindings.**
+  The [`jq` PyPI package](https://pypi.org/project/jq/) serializes your data
+  to JSON text and back on every call; purejq evaluates directly on Python
+  objects.
+- **On big files, the CLI beats the C jq binary end-to-end.** Large-file runs
+  are dominated by JSON parsing, and CPython's C-backed parser is faster than
+  jq's.
+- **It's real jq**: 751/781 cases (96.2%) of jq's own test suite pass —
+  the suite is vendored in this repo and run in CI on every commit.
+
+Where C jq still wins: raw filter throughput on already-parsed streams in
+shell pipelines. If you can install binaries and that's your workload, use jq.
+
+## Benchmarks
+
+Measured with [tools/bench.py](tools/bench.py) (M-series MacBook, CPython
+3.13, jq 1.8.1, best of 3). Reproduce: `python3 tools/bench.py 1000000`.
+
+**Embedded in Python** — 100k-object array, already parsed, in-process:
+
+| workload | purejq | `jq` PyPI (C bindings) |
+|---|---:|---:|
+| field-access stream | 9 ms | 410 ms |
+| filter + count | 56 ms | 485 ms |
+| map + aggregate | 18 ms | 483 ms |
+| group_by | 114 ms | 765 ms |
+| transform + sort | 141 ms | 943 ms |
+| regex filter | 130 ms | 789 ms |
+
+**Command line, end to end** — 93 MB file (1M objects), parse + filter + output:
+
+| workload | purejq | jq 1.8 (C binary) |
+|---|---:|---:|
+| single lookup | 0.5 s | 1.6 s |
+| filter + count | 1.1 s | 2.0 s |
+| group_by | 2.3 s | 4.0 s |
+
+*purejq CLI measured with the optional [orjson](https://github.com/ijl/orjson)
+extra (`pip install 'purejq[speed]'`); with stdlib json alone it is ~25–35%
+slower and still ahead on these workloads.*
+
+**Loading large JSON into Python**: the 93 MB file parses in 0.73 s with
+stdlib json (128 MB/s) or 0.43 s with orjson (219 MB/s) — input loading is
+C-speed either way and scales linearly.
+
+**PyPy** (100k objects, same code, no changes): filter + count 13 ms,
+map + aggregate 2 ms, group_by 33 ms, transform + sort 70 ms — roughly
+another 2–9x over CPython for heavy workloads.
+
+How it's fast, in one line: programs compile once into Python closures with
+static binding and single-output fast paths — evaluation never re-walks the
+AST, and common shapes skip generator machinery entirely.
+
+## jq compatibility
+
+751/781 of jq's official test suite. Every remaining difference is listed in
+[expected_failures.txt](tests/conformance/expected_failures.txt); they fall
+into three buckets:
+
+- the **module system** (`import`/`include`) is not implemented yet
+- **integers are exact** (arbitrary precision, like gojq) instead of rounding
+  to doubles — deliberate
+- a few **error-message wordings** differ
+
+Everything else is there: paths and all assignment operators,
+`reduce`/`foreach`, `try`/`catch`, `label`/`break`, `?//` destructuring,
+string interpolation, `@formats`, regex builtins, streaming
+(`tostream`/`fromstream`), dates, and jq 1.8 additions.
+
+CLI flags: `-n -r -j -c -s -e -f --arg --argjson`. Outputs are lazy
+iterators — `purejq.compile("repeat(. * 2)").run(1)` happily yields forever.
 
 ## Compatibility
 
-CPython **3.9 – 3.14** and **PyPy**, enforced by the
-[CI matrix](.github/workflows/ci.yml) on every push. Zero runtime
-dependencies.
+CPython 3.9–3.14 and PyPy, zero runtime dependencies, enforced by
+[CI](.github/workflows/ci.yml) on every push.
 
-## Architecture
+## Contributing & internals
 
-```
-source ──lexer──▶ tokens ──parser──▶ AST (tuples)
-                                      │ compile (once)
-                                      ▼
-                    generator closures: f(value, env) → iterator
-                                      │
-              path mode: g(value, path, env) → (path, value) pairs
-                        (powers path(), del(), and all assignments)
-```
-
-- [lexer.py](src/purejq/lexer.py) / [parser.py](src/purejq/parser.py) — jq grammar, including string interpolation
-- [compiler.py](src/purejq/compiler.py) — closure compilation, environments, value & path modes
-- [ops.py](src/purejq/ops.py) — jq value semantics: total ordering, arithmetic, path read/write
-- [builtins.py](src/purejq/builtins.py) — Python-native builtins (regex, sort, math, dates, formats)
-- [prelude.py](src/purejq/prelude.py) — derived builtins defined in jq itself, mirroring jq's `builtin.jq`
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). The short version: make a conformance
-number go up, and `python3 tools/update_expected_failures.py` is your
-scoreboard.
+See [CONTRIBUTING.md](CONTRIBUTING.md) — the conformance suite is the
+scoreboard, `tools/bench.py` is the speedometer.
 
 ## License
 
