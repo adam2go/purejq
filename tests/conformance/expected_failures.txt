@@ -1,0 +1,35 @@
+# Conformance cases that purejq does not pass yet.
+# Format: <case-id>\t# <program>
+# Regenerate with: python3 tools/update_expected_failures.py
+# Passing: 750/781 (96.0%)
+jq.test:1127	# try path(.a | map(select(.b == 0)) | .[0]) catch .
+jq.test:1131	# try path(.a | map(select(.b == 0)) | .c) catch .
+jq.test:1135	# try path(.a | map(select(.b == 0)) | .[]) catch .
+jq.test:1290	# try ((map(select(.a == 1))[].b) = 10) catch .
+jq.test:1294	# try ((map(select(.a == 1))[].a) |= .+1) catch .
+jq.test:1900	# import "a" as foo; import "b" as bar; def fooa: foo::a; [fooa, bar::a, bar::b, foo::a]
+jq.test:1904	# import "c" as foo; [foo::a, foo::c]
+jq.test:1908	# include "c"; [a, c]
+jq.test:1912	# import "data" as $e; import "data" as $d; [$d[].this,$e[].that,$d::d[].this,$e::e[].that]|join(";")
+jq.test:1917	# import "data" as $a; import "data" as $b; def f: {$a, $b}; f
+jq.test:1921	# include "shadow1"; e
+jq.test:1925	# include "shadow1"; include "shadow2"; e
+jq.test:1929	# import "shadow1" as f; import "shadow2" as f; import "shadow1" as e; [e::e, f::e]
+jq.test:1969	# modulemeta
+jq.test:1973	# modulemeta | .deps | length
+jq.test:1977	# modulemeta | .defs | length
+jq.test:1993	# import "test_bind_order" as check; check::check
+jq.test:2211	# . - 10
+jq.test:2215	# .[0] - 10
+jq.test:2219	# .x - 10
+jq.test:2228	# -. | tojson == if have_decnum then "0.12345678901234567890123456789" else "0.12345678901234568" end
+jq.test:2232	# [1E+1000,-1E+1000 | tojson] == if have_decnum then ["1E+1000","-1E+1000"] else ["1.7976931348623157e+308","-1.7976931348
+jq.test:2241	# .[] as $n | $n+0 | [., tostring, . == $n]
+jq.test:2271	# [1E+1000,-1E+1000 | abs | tojson] | unique == if have_decnum then ["1E+1000"] else ["1.7976931348623157e+308"] end
+jq.test:2275	# [1E+1000,-1E+1000 | length | tojson] | unique == if have_decnum then ["1E+1000"] else ["1.7976931348623157e+308"] end
+jq.test:2324	# .[] | try (fromjson | isnan) catch .
+jq.test:2498	# try fromjson catch .
+jq.test:2558	# reduce range(9999) as $_ ([];[.]) | tojson | fromjson | flatten
+man.test:21	# map([., . == 1]) | tojson == if have_decnum then "[[1,true],[1.000,true],[1.0,true],[1.00,true]]" else "[[1,true],[1,tru
+man.test:25	# . as $big | [$big, $big + 1] | map(. > 10000000000000000000000000000000) | . == if have_decnum then [true, false] else [
+man.test:654	# [repeat(.*2, error)?]

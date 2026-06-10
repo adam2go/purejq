@@ -28,6 +28,9 @@ classifiers = [
     "Topic :: Text Processing :: Filters",
 ]
 
+[project.optional-dependencies]
+speed = ["orjson"]
+
 [project.urls]
 Homepage = "https://github.com/adam2go/purejq"
 
