@@ -55,20 +55,41 @@ def make_data(n):
     ]
 
 
-def best_of(fn, repeat=3):
-    best = float("inf")
+def best_of(fn, repeat=5):
+    """Median of `repeat` runs (named for history; medians resist outliers)."""
+    import statistics
+    ts = []
     for _ in range(repeat):
         t = time.perf_counter()
         fn()
-        best = min(best, time.perf_counter() - t)
-    return best
+        ts.append(time.perf_counter() - t)
+    return statistics.median(ts)
+
+
+def verify(data, data_file, jq_bin):
+    """Assert purejq's outputs are identical to the jq binary's."""
+    from purejq.ops import values_equal
+    for program, label in ENGINE_WORKLOADS:
+        ours = list(purejq.compile(program).run(data))
+        r = subprocess.run([jq_bin, "-c", program, data_file],
+                           capture_output=True, text=True, check=True)
+        theirs = [json.loads(line) for line in r.stdout.strip().split("\n") if line]
+        same = len(ours) == len(theirs) and all(
+            values_equal(a, b) for a, b in zip(ours, theirs))
+        print("%-7s %s" % ("OK" if same else ">>>DIFF", label))
+        if not same:
+            raise SystemExit("output mismatch on: " + program)
+    print("all outputs identical to %s" % jq_bin)
 
 
 def main():
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 100000
+    args = [a for a in sys.argv[1:] if a != "--verify"]
+    do_verify = "--verify" in sys.argv
+    n = int(args[0]) if args else 100000
     data = make_data(n)
     impl = platform.python_implementation()
-    print("dataset: %d objects | %s %s" % (n, impl, platform.python_version()))
+    print("dataset: %d objects | %s %s | median of 5 runs"
+          % (n, impl, platform.python_version()))
 
     jq_bin = os.environ.get("JQ_BIN") or shutil.which("jq")
     try:
@@ -80,6 +101,12 @@ def main():
     with os.fdopen(fd, "w") as f:
         json.dump(data, f)
     size_mb = os.path.getsize(data_file) / 1e6
+
+    if do_verify:
+        if not jq_bin:
+            raise SystemExit("--verify needs the jq binary (PATH or JQ_BIN)")
+        print("\n## Verifying outputs against the jq binary")
+        verify(data, data_file, jq_bin)
 
     # --- 1. in-process engine (pre-parsed data, pure filter evaluation) ----
     print("\n## In-process engine (data already parsed)")

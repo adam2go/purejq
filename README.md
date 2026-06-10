@@ -43,27 +43,32 @@ shell pipelines. If you can install binaries and that's your workload, use jq.
 
 ## Benchmarks
 
-Measured with [tools/bench.py](tools/bench.py) (M-series MacBook, CPython
-3.13, jq 1.8.1, best of 3). Reproduce: `python3 tools/bench.py 1000000`.
+Measured with [tools/bench.py](tools/bench.py): M-series MacBook, CPython
+3.13, jq 1.8.1 (native arm64), **median of 7 runs**, and every workload's
+output verified byte-identical against the jq binary first. Reproduce both:
+`python3 tools/bench.py 1000000 --verify`.
 
 **Embedded in Python** — 100k-object array, already parsed, in-process:
 
 | workload | purejq | `jq` PyPI (C bindings) |
 |---|---:|---:|
-| field-access stream | 9 ms | 410 ms |
-| filter + count | 56 ms | 485 ms |
-| map + aggregate | 18 ms | 483 ms |
-| group_by | 114 ms | 765 ms |
-| transform + sort | 141 ms | 943 ms |
-| regex filter | 130 ms | 789 ms |
+| field-access stream | 9 ms | 368 ms |
+| filter + count | 55 ms | 442 ms |
+| map + aggregate | 18 ms | 444 ms |
+| group_by | 112 ms | 704 ms |
+| transform + sort | 136 ms | 899 ms |
+| regex filter | 127 ms | 747 ms |
+
+*The binding numbers are its best case (JSON text input); passing Python
+objects, its usual mode, is another ~10% slower.*
 
 **Command line, end to end** — 93 MB file (1M objects), parse + filter + output:
 
 | workload | purejq | jq 1.8 (C binary) |
 |---|---:|---:|
-| single lookup | 0.5 s | 1.6 s |
-| filter + count | 1.1 s | 2.0 s |
-| group_by | 2.3 s | 4.0 s |
+| single lookup | 0.51 s | 1.68 s |
+| filter + count | 1.08 s | 1.96 s |
+| group_by | 2.32 s | 3.89 s |
 
 *purejq CLI measured with the optional [orjson](https://github.com/ijl/orjson)
 extra (`pip install 'purejq[speed]'`); with stdlib json alone it is ~25–35%
