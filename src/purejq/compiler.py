@@ -585,11 +585,19 @@ def _collect_pattern_vars(pat, out):
             _collect_pattern_vars(p, out)
 
 
-_PATTERN_KEY_CACHE = {}
+def compile_pattern(pat):
+    """Pre-compile object-pattern key expressions (once, at compile time)."""
+    tag = pat[0]
+    if tag == "pvar":
+        return pat
+    if tag == "parray":
+        return ("parray", [compile_pattern(p) for p in pat[1]])
+    return ("pobject", [(compile_v(k), compile_pattern(p), bindvar)
+                        for k, p, bindvar in pat[1]])
 
 
 def destructure(pat, value, env):
-    """Yield binding dicts for a pattern matched against a value."""
+    """Yield binding dicts for a compiled pattern matched against a value."""
     tag = pat[0]
     if tag == "pvar":
         yield {pat[1]: value}
@@ -625,12 +633,8 @@ def destructure(pat, value, env):
         if i == len(entries):
             yield acc
             return
-        kast, sub, bindvar = entries[i]
-        ck = _PATTERN_KEY_CACHE.get(id(kast))
-        if ck is None:
-            ck = compile_v(kast)
-            _PATTERN_KEY_CACHE[id(kast)] = ck
-        for k in ck(value, env):
+        kfn, sub, bindvar = entries[i]
+        for k in kfn(value, env):
             if not isinstance(k, str):
                 raise JqError("Cannot index object with %s" % type_name(k))
             subvalue = value.get(k)
@@ -672,6 +676,7 @@ def _v_as(ast):
     all_vars = set()
     for p in patterns:
         _collect_pattern_vars(p, all_vars)
+    patterns = [compile_pattern(p) for p in patterns]
 
     if len(patterns) == 1:
         def vfn(input, env):
@@ -712,6 +717,7 @@ def _p_as(ast):
     all_vars = set()
     for p in patterns:
         _collect_pattern_vars(p, all_vars)
+    patterns = [compile_pattern(p) for p in patterns]
 
     def pfn(input, path, env):
         for sv in src_v(input, env):
@@ -733,6 +739,7 @@ def _v_reduce(ast):
     all_vars = set()
     for p in patterns:
         _collect_pattern_vars(p, all_vars)
+    patterns = [compile_pattern(p) for p in patterns]
 
     def vfn(input, env):
         for iv in init_v(input, env):
@@ -762,6 +769,7 @@ def _v_foreach(ast):
     all_vars = set()
     for p in patterns:
         _collect_pattern_vars(p, all_vars)
+    patterns = [compile_pattern(p) for p in patterns]
 
     def vfn(input, env):
         for iv in init_v(input, env):

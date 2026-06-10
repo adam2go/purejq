@@ -1,14 +1,18 @@
 import warnings
 
 import pytest
-from jqtest import load_all_cases, load_expected_failures, run_case
+from jqtest import (deep_tests_supported, is_depth_bomb, load_all_cases,
+                    load_expected_failures, run_case)
 
 CASES = load_all_cases()
 EXPECTED_FAILURES = load_expected_failures()
+DEEP_OK = deep_tests_supported()
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c.id for c in CASES])
 def test_conformance(case):
+    if not DEEP_OK and is_depth_bomb(case):
+        pytest.skip("10000-deep recursion tests need CPython >= 3.11")
     ok, detail = run_case(case)
     if case.id in EXPECTED_FAILURES:
         if ok:

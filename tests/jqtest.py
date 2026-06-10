@@ -105,6 +105,20 @@ def load_all_cases():
     return cases
 
 
+def is_depth_bomb(case):
+    """Cases that build ~10000-deep structures. CPython < 3.11 keeps Python
+    frames on the C stack and PyPy has its own limits, so these are only
+    reliable on CPython >= 3.11."""
+    import re
+    return bool(re.search(r"range\(\s*(9999|10000|10001)\s*\)", case.program))
+
+
+def deep_tests_supported():
+    import platform
+    return (platform.python_implementation() == "CPython"
+            and sys.version_info >= (3, 11))
+
+
 def load_expected_failures():
     ids = set()
     if os.path.exists(EXPECTED_FAILURES_FILE):
