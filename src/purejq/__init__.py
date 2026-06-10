@@ -1,7 +1,7 @@
 """purejq: a pure Python implementation of jq."""
 from __future__ import annotations
 
-from .compiler import Env, compile_v
+from .compiler import Env, _names_ctx, collect_defined_names, compile_v
 from .encoder import encode, encode_pretty
 from .errors import Halt, JqError, JqParseError
 from .parser import parse
@@ -17,7 +17,10 @@ class Program:
 
     def __init__(self, source):
         self.source = source
-        self._vfn = compile_v(parse(source))
+        ast = parse(source)
+        prelude_env()  # built first so calls can be statically bound
+        with _names_ctx(frozenset(collect_defined_names(ast))):
+            self._vfn = compile_v(ast)
 
     def run(self, value=None, inputs=None, vars=None):
         """Run the program on one input value; returns an iterator of outputs."""

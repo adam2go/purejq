@@ -48,6 +48,12 @@ def _not(input, env):
 
 @_register("select", 1)
 def _select(input, env, f):
+    g = f.g
+    if g is not None:
+        v = g(input, f.env)
+        if v is not None and v is not False:
+            yield input
+        return
     for v in f.vals(input):
         if v is not None and v is not False:
             yield input
@@ -64,6 +70,11 @@ PY_BUILTINS_PATH[("select", 1)] = _select_path
 
 @_register("map", 1)
 def _map(input, env, f):
+    g = f.g
+    if g is not None:
+        fenv = f.env
+        yield [g(x, fenv) for x in ops.iterate_value(input)]
+        return
     out = []
     for x in ops.iterate_value(input):
         out.extend(f.vals(x))
@@ -1117,6 +1128,9 @@ def _sort(input, env):
 
 
 def _by_key(f, x):
+    g = f.g
+    if g is not None:
+        return [g(x, f.env)]
     return list(f.vals(x))
 
 

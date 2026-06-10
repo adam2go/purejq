@@ -115,12 +115,14 @@ def prelude_env():
     """Build (once) the root environment containing all prelude definitions."""
     global _PRELUDE_ENV
     if _PRELUDE_ENV is None:
+        from .compiler import collect_defined_names
         node = parse(PRELUDE)
+        ctx = frozenset(collect_defined_names(node))
         funcs = {}
         created = []
         while node[0] == "funcdef":
             _, name, params, body, rest = node
-            fv = FuncVal(params, body)
+            fv = FuncVal(params, body, ctx)
             funcs[(name, len(params))] = fv
             created.append(fv)
             _PRELUDE_NAMES.append("%s/%d" % (name, len(params)))

@@ -58,36 +58,82 @@ class Env:
         return None
 
 
+# Names defined anywhere in the program being compiled (funcdefs and filter
+# params). Calls to any OTHER name can only ever resolve to the prelude or a
+# Python builtin, so those are bound at compile time, skipping the runtime
+# environment walk entirely. Compilation is single-threaded per program.
+_defined_names = frozenset()
+
+
+class _names_ctx:
+    def __init__(self, names):
+        self.names = names
+
+    def __enter__(self):
+        global _defined_names
+        self.saved = _defined_names
+        _defined_names = self.names
+
+    def __exit__(self, *exc):
+        global _defined_names
+        _defined_names = self.saved
+        return False
+
+
+def collect_defined_names(node, out=None):
+    if out is None:
+        out = set()
+    if isinstance(node, tuple):
+        if node and node[0] == "funcdef":
+            out.add(node[1])
+            for p in node[2]:
+                out.add(p[1:] if p.startswith("$") else p)
+        for sub in node:
+            collect_defined_names(sub, out)
+    elif isinstance(node, list):
+        for sub in node:
+            collect_defined_names(sub, out)
+    return out
+
+
 class FuncVal:
     """A user-defined function (from `def`) closed over its defining env."""
-    __slots__ = ("params", "body", "env", "_cv", "_cp")
+    __slots__ = ("params", "body", "env", "ctx", "_cv", "_cp")
 
-    def __init__(self, params, body):
+    def __init__(self, params, body, ctx=None):
         self.params = params
         self.body = body
         self.env = None
+        self.ctx = _defined_names if ctx is None else ctx
         self._cv = None
         self._cp = None
 
     def compiled_v(self):
         if self._cv is None:
-            self._cv = compile_v(self.body)
+            with _names_ctx(self.ctx):
+                self._cv = compile_v(self.body)
         return self._cv
 
     def compiled_p(self):
         if self._cp is None:
-            self._cp = compile_p(self.body)
+            with _names_ctx(self.ctx):
+                self._cp = compile_p(self.body)
         return self._cp
 
 
 class ArgClosure:
-    """A filter argument bound to its caller's environment (call-by-name)."""
-    __slots__ = ("vfn", "pfn", "env")
+    """A filter argument bound to its caller's environment (call-by-name).
 
-    def __init__(self, vfn, pfn, env):
+    `g` is an optional plain-callable fast path for single-output filters
+    (see _single_getter); builtins use it to skip generator machinery.
+    """
+    __slots__ = ("vfn", "pfn", "env", "g")
+
+    def __init__(self, vfn, pfn, env, g=None):
         self.vfn = vfn
         self.pfn = pfn
         self.env = env
+        self.g = g
 
     def vals(self, input):
         return self.vfn(input, self.env)
@@ -220,7 +266,20 @@ def _v_iterate(ast):
 
 
 def _v_pipe(ast):
+    ga = _single_getter(ast[1])
+    if ga is not None:  # single-valued lhs: run rhs on that one value
+        b = compile_v(ast[2])
+
+        def vfn(input, env):
+            return b(ga(input, env), env)
+        return vfn
     a = compile_v(ast[1])
+    gb = _single_getter(ast[2])
+    if gb is not None:  # e.g. `.[] | .name`: skip the rhs generator
+        def vfn(input, env):
+            for av in a(input, env):
+                yield gb(av, env)
+        return vfn
     b = compile_v(ast[2])
 
     def vfn(input, env):
@@ -251,41 +310,105 @@ _BINOPS = {
 }
 
 
-def _v_binop(ast):
-    op = ast[1]
-    a = compile_v(ast[2])
-    b = compile_v(ast[3])
+def _single_getter(ast):
+    """For expressions guaranteed to produce exactly one value, return a plain
+    callable g(input, env) -> value, avoiding a generator round-trip."""
+    tag = ast[0]
+    if tag == "const":
+        v = ast[1]
+        return lambda input, env: v
+    if tag == "identity":
+        return lambda input, env: input
+    if tag == "var":
+        name = ast[1]
+        return lambda input, env: env.lookup_var(name)
+    if tag == "field":
+        basef = _single_getter(ast[1])
+        if basef is None:
+            return None
+        name = ast[2]
+
+        def get(input, env):
+            b = basef(input, env)
+            if b is None:
+                return None
+            if isinstance(b, dict):
+                return b.get(name)
+            raise JqError('Cannot index %s with %s' % (type_name(b), ops.describe(name)))
+        return get
+    if tag == "binop":
+        ga = _single_getter(ast[2])
+        if ga is None:
+            return None
+        gb = _single_getter(ast[3])
+        if gb is None:
+            return None
+        fn = _binop_fn(ast[1])
+        return lambda input, env: fn(ga(input, env), gb(input, env))
+    if tag == "neg":
+        g = _single_getter(ast[1])
+        if g is None:
+            return None
+        return lambda input, env: ops.neg_value(g(input, env))
+    if tag == "index":
+        basef = _single_getter(ast[1])
+        if basef is None:
+            return None
+        gi = _single_getter(ast[2])
+        if gi is None:
+            return None
+        return lambda input, env: ops.index_value(basef(input, env), gi(input, env))
+    return None
+
+
+def _binop_fn(op):
     fn = _BINOPS.get(op)
     if fn is not None:
+        return fn
+    if op == "==":
+        return lambda l, r: ops.values_equal(l, r)
+    if op == "!=":
+        return lambda l, r: not ops.values_equal(l, r)
+    if op == "<":
+        return lambda l, r: ops.jq_cmp(l, r) < 0
+    if op == "<=":
+        return lambda l, r: ops.jq_cmp(l, r) <= 0
+    if op == ">":
+        return lambda l, r: ops.jq_cmp(l, r) > 0
+    return lambda l, r: ops.jq_cmp(l, r) >= 0
+
+
+def _v_binop(ast):
+    op = ast[1]
+    fn = _binop_fn(op)
+    ga = _single_getter(ast[2])
+    gb = _single_getter(ast[3])
+    if ga is not None and gb is not None:
+        def vfn(input, env):
+            yield fn(ga(input, env), gb(input, env))
+        return vfn
+    if gb is not None:
+        a = compile_v(ast[2])
+
+        def vfn(input, env):
+            rv = gb(input, env)
+            for lv in a(input, env):
+                yield fn(lv, rv)
+        return vfn
+    if ga is not None:
+        b = compile_v(ast[3])
+
         def vfn(input, env):
             for rv in b(input, env):
-                for lv in a(input, env):
-                    yield fn(lv, rv)
+                yield fn(ga(input, env), rv)
         return vfn
-
-    if op == "==":
-        def test(l, r):
-            return ops.values_equal(l, r)
-    elif op == "!=":
-        def test(l, r):
-            return not ops.values_equal(l, r)
-    elif op == "<":
-        def test(l, r):
-            return ops.jq_cmp(l, r) < 0
-    elif op == "<=":
-        def test(l, r):
-            return ops.jq_cmp(l, r) <= 0
-    elif op == ">":
-        def test(l, r):
-            return ops.jq_cmp(l, r) > 0
-    else:
-        def test(l, r):
-            return ops.jq_cmp(l, r) >= 0
+    a = compile_v(ast[2])
+    b = compile_v(ast[3])
 
     def vfn(input, env):
         for rv in b(input, env):
             for lv in a(input, env):
-                yield test(lv, rv)
+                yield fn(lv, rv)
     return vfn
 
 
@@ -442,16 +565,35 @@ def _v_object(ast):
         # constant keys (the overwhelmingly common case): evaluate the value
         # columns directly instead of recursing through generator products
         names = [k[1] for k, _v in ast[1]]
+        getters = [_single_getter(v) for _k, v in ast[1]]
+
+        if all(g is not None for g in getters):
+            # every value is single-output: build the dict with zero generators
+            pairs = list(zip(names, getters))
+
+            def vfn(input, env):
+                d = {}
+                for name, g in pairs:
+                    d[name] = g(input, env)
+                yield d
+            return vfn
+
         vcs = [vc for _kc, vc in entries]
 
         def vfn(input, env):
             cols = []
-            for vc in vcs:
+            single = True
+            for g, vc in zip(getters, vcs):
+                if g is not None:
+                    cols.append((g(input, env),))
+                    continue
                 col = list(vc(input, env))
                 if not col:  # an empty entry produces no objects at all
                     return
+                if len(col) != 1:
+                    single = False
                 cols.append(col)
-            if all(len(c) == 1 for c in cols):
+            if single:
                 d = {}
                 for name, c in zip(names, cols):
                     d[name] = c[0]
@@ -520,9 +662,10 @@ def _v_funcdef(ast):
     _, name, params, body, rest = ast
     rest_v = compile_v(rest)
     key = (name, len(params))
+    ctx = _defined_names  # capture the compile-time name set for the lazy body
 
     def vfn(input, env):
-        fv = FuncVal(params, body)
+        fv = FuncVal(params, body, ctx)
         env2 = Env(parent=env, funcs={key: fv})
         fv.env = env2
         return rest_v(input, env2)
@@ -533,9 +676,10 @@ def _p_funcdef(ast):
     _, name, params, body, rest = ast
     rest_p = compile_p(rest)
     key = (name, len(params))
+    ctx = _defined_names
 
     def pfn(input, path, env):
-        fv = FuncVal(params, body)
+        fv = FuncVal(params, body, ctx)
         env2 = Env(parent=env, funcs={key: fv})
         fv.env = env2
         return rest_p(input, path, env2)
@@ -577,8 +721,39 @@ def _call_funcval(fv, arg_closures, input, env, mode, path=None):
 def _v_call(ast):
     _, name, args = ast
     key = (name, len(args))
-    compiled_args = [(compile_v(a), compile_p(a)) for a in args]
+    compiled_args = [(compile_v(a), compile_p(a), _single_getter(a)) for a in args]
     from . import builtins as _b
+
+    if name not in _defined_names:
+        # the program never defines this name: bind it now
+        from .prelude import prelude_env
+        fv = prelude_env().lookup_func(key)
+        if isinstance(fv, FuncVal):
+            if not compiled_args:
+                def vfn(input, env):
+                    return _call_funcval(fv, (), input, env, "v")
+                return vfn
+
+            def vfn(input, env):
+                closures = [ArgClosure(cv, cp, env, g) for cv, cp, g in compiled_args]
+                return _call_funcval(fv, closures, input, env, "v")
+            return vfn
+        pyfn = _b.PY_BUILTINS.get(key)
+        if pyfn is not None:
+            if not compiled_args:
+                def vfn(input, env):
+                    return pyfn(input, env)
+                return vfn
+
+            def vfn(input, env):
+                closures = [ArgClosure(cv, cp, env, g) for cv, cp, g in compiled_args]
+                return pyfn(input, env, *closures)
+            return vfn
+
+        def vfn(input, env):
+            raise JqError("%s/%d is not defined" % (name, len(args)))
+            yield  # pragma: no cover
+        return vfn
 
     def vfn(input, env):
         fn = env.lookup_func(key)
@@ -586,10 +761,10 @@ def _v_call(ast):
             pyfn = _b.PY_BUILTINS.get(key)
             if pyfn is None:
                 raise JqError("%s/%d is not defined" % (name, len(args)))
-            closures = [ArgClosure(cv, cp, env) for cv, cp in compiled_args]
+            closures = [ArgClosure(cv, cp, env, g) for cv, cp, g in compiled_args]
             return pyfn(input, env, *closures)
         if isinstance(fn, FuncVal):
-            closures = [ArgClosure(cv, cp, env) for cv, cp in compiled_args]
+            closures = [ArgClosure(cv, cp, env, g) for cv, cp, g in compiled_args]
             return _call_funcval(fn, closures, input, env, "v")
         return fn.vals(input)
     return vfn
@@ -598,24 +773,40 @@ def _v_call(ast):
 def _p_call(ast):
     _, name, args = ast
     key = (name, len(args))
-    compiled_args = [(compile_v(a), compile_p(a)) for a in args]
+    compiled_args = [(compile_v(a), compile_p(a), _single_getter(a)) for a in args]
     from . import builtins as _b
+
+    def _py_path_fallback(input, path, env, closures):
+        pyfn = _b.PY_BUILTINS_PATH.get(key)
+        if pyfn is None:
+            pyfn_v = _b.PY_BUILTINS.get(key)
+            if pyfn_v is not None:
+                for v in pyfn_v(input, env, *closures):
+                    raise JqError("Invalid path expression with result %s" % encode(v))
+            raise JqError("Invalid path expression near %s" % name)
+        return pyfn(input, path, env, *closures)
+
+    if name not in _defined_names:
+        from .prelude import prelude_env
+        fv = prelude_env().lookup_func(key)
+        if isinstance(fv, FuncVal):
+            def pfn(input, path, env):
+                closures = [ArgClosure(cv, cp, env, g) for cv, cp, g in compiled_args]
+                return _call_funcval(fv, closures, input, env, "p", path)
+            return pfn
+
+        def pfn(input, path, env):
+            closures = [ArgClosure(cv, cp, env, g) for cv, cp, g in compiled_args]
+            return _py_path_fallback(input, path, env, closures)
+        return pfn
 
     def pfn(input, path, env):
         fn = env.lookup_func(key)
         if fn is None:
-            pyfn = _b.PY_BUILTINS_PATH.get(key)
-            if pyfn is None:
-                pyfn_v = _b.PY_BUILTINS.get(key)
-                if pyfn_v is not None:
-                    closures = [ArgClosure(cv, cp, env) for cv, cp in compiled_args]
-                    for v in pyfn_v(input, env, *closures):
-                        raise JqError("Invalid path expression with result %s" % encode(v))
-                raise JqError("Invalid path expression near %s" % name)
-            closures = [ArgClosure(cv, cp, env) for cv, cp in compiled_args]
-            return pyfn(input, path, env, *closures)
+            closures = [ArgClosure(cv, cp, env, g) for cv, cp, g in compiled_args]
+            return _py_path_fallback(input, path, env, closures)
         if isinstance(fn, FuncVal):
-            closures = [ArgClosure(cv, cp, env) for cv, cp in compiled_args]
+            closures = [ArgClosure(cv, cp, env, g) for cv, cp, g in compiled_args]
             return _call_funcval(fn, closures, input, env, "p", path)
         return fn.paths(input, path)
     return pfn
@@ -730,6 +921,16 @@ def _v_as(ast):
         _collect_pattern_vars(p, all_vars)
     patterns = [compile_pattern(p) for p in patterns]
 
+    if len(patterns) == 1 and patterns[0][0] == "pvar":
+        vname = patterns[0][1]
+
+        def vfn(input, env):
+            for sv in src_v(input, env):
+                env2 = Env(parent=env, vars={vname: sv})
+                for r in body_v(input, env2):
+                    yield r
+        return vfn
+
     if len(patterns) == 1:
         def vfn(input, env):
             for sv in src_v(input, env):
@@ -793,6 +994,26 @@ def _v_reduce(ast):
         _collect_pattern_vars(p, all_vars)
     patterns = [compile_pattern(p) for p in patterns]
 
+    if len(patterns) == 1 and patterns[0][0] == "pvar":
+        vname = patterns[0][1]
+
+        def vfn(input, env):
+            for iv in init_v(input, env):
+                acc = iv
+                vars = {vname: None}
+                env2 = Env(parent=env, vars=vars)
+                for sv in src_v(input, env):
+                    vars[vname] = sv
+                    last = _EMPTY
+                    for out in update_v(acc, env2):
+                        last = out
+                    acc = last
+                    if acc is _EMPTY:
+                        break
+                if acc is not _EMPTY:
+                    yield acc
+        return vfn
+
     def vfn(input, env):
         for iv in init_v(input, env):
             acc = iv
@@ -822,6 +1043,25 @@ def _v_foreach(ast):
     for p in patterns:
         _collect_pattern_vars(p, all_vars)
     patterns = [compile_pattern(p) for p in patterns]
+
+    if len(patterns) == 1 and patterns[0][0] == "pvar":
+        vname = patterns[0][1]
+
+        def vfn(input, env):
+            for iv in init_v(input, env):
+                acc = iv
+                vars = {vname: None}
+                env2 = Env(parent=env, vars=vars)
+                for sv in src_v(input, env):
+                    vars[vname] = sv
+                    for out in update_v(acc, env2):
+                        acc = out
+                        if extract_v is not None:
+                            for ev in extract_v(acc, env2):
+                                yield ev
+                        else:
+                            yield acc
+        return vfn
 
     def vfn(input, env):
         for iv in init_v(input, env):

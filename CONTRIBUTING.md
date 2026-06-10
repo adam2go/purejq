@@ -1,5 +1,23 @@
 # Contributing to purejq
 
+## Architecture
+
+```
+source ──lexer──▶ tokens ──parser──▶ AST (tuples)
+                                      │ compile (once)
+                                      ▼
+                    generator closures: f(value, env) → iterator
+                                      │
+              path mode: g(value, path, env) → (path, value) pairs
+                        (powers path(), del(), and all assignments)
+```
+
+- [lexer.py](src/purejq/lexer.py) / [parser.py](src/purejq/parser.py) — jq grammar, including string interpolation
+- [compiler.py](src/purejq/compiler.py) — closure compilation, environments, value & path modes, static call binding, single-output fast paths
+- [ops.py](src/purejq/ops.py) — jq value semantics: total ordering, arithmetic, path read/write
+- [builtins.py](src/purejq/builtins.py) — Python-native builtins (regex, sort, math, dates, formats)
+- [prelude.py](src/purejq/prelude.py) — derived builtins defined in jq itself, mirroring jq's `builtin.jq`
+
 ## Development setup
 
 ```sh

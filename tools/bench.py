@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
-"""Benchmark purejq against the system jq binary on representative workloads."""
+"""Benchmark purejq: in-process engine, end-to-end CLI, and JSON loading.
+
+Usage:
+    python3 tools/bench.py [N]          # N objects, default 100000
+Optional comparisons, used when available:
+    - system `jq` binary (or set JQ_BIN=/path/to/jq)
+    - the `jq` PyPI package (C bindings), if importable
+    - orjson, if importable
+"""
 from __future__ import annotations
 
 import json
 import os
+import platform
 import random
 import shutil
 import subprocess
@@ -16,13 +25,19 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import purejq  # noqa: E402
 
-WORKLOADS = [
-    (".[] | .name", "stream of field accesses"),
+ENGINE_WORKLOADS = [
+    (".[] | .name", "field-access stream"),
     ("[.[] | select(.score > 50)] | length", "filter + count"),
     ("map(.score) | add / length", "map + aggregate"),
+    ("reduce .[] as $x (0; . + $x.score)", "reduce sum"),
     ("group_by(.team) | map({team: .[0].team, n: length})", "group_by"),
     ("[.[] | {id, name, big: (.score * 2 + 1)}] | sort_by(.big) | .[:5]", "transform + sort"),
-    ('[.[] | .tags[]] | unique | length', "nested iteration + unique"),
+    ("[.[] | .tags[]] | unique | length", "nested iteration + unique"),
+    ('[.[] | .name | sub("user"; "u")] | length', "regex sub"),
+    ("[.[] | select(.name | test(\"7$\"))] | length", "regex filter"),
+    ("map(.score) | sort | .[length / 2 | floor]", "median (sort numbers)"),
+    ("[.[] | .name + \"-\" + .team] | length", "string concat"),
+    ("(.[0:1000] | map(to_entries)) | length", "to_entries (1k objects)"),
 ]
 
 
@@ -40,23 +55,11 @@ def make_data(n):
     ]
 
 
-def bench_purejq(program, data, repeat=3):
-    prog = purejq.compile(program)
+def best_of(fn, repeat=3):
     best = float("inf")
     for _ in range(repeat):
         t = time.perf_counter()
-        for _out in prog.run(data):
-            pass
-        best = min(best, time.perf_counter() - t)
-    return best
-
-
-def bench_jq(jq_bin, program, data_file, repeat=3):
-    best = float("inf")
-    for _ in range(repeat):
-        t = time.perf_counter()
-        subprocess.run([jq_bin, "-c", program, data_file],
-                       stdout=subprocess.DEVNULL, check=True)
+        fn()
         best = min(best, time.perf_counter() - t)
     return best
 
@@ -64,33 +67,77 @@ def bench_jq(jq_bin, program, data_file, repeat=3):
 def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 100000
     data = make_data(n)
-    print("dataset: %d objects, python %s" % (n, sys.version.split()[0]))
+    impl = platform.python_implementation()
+    print("dataset: %d objects | %s %s" % (n, impl, platform.python_version()))
 
-    jq_bin = shutil.which("jq")
-    data_file = None
-    if jq_bin:
-        fd, data_file = tempfile.mkstemp(suffix=".json")
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f)
-        print("comparing against: %s" % jq_bin)
-    else:
-        print("system jq not found; benchmarking purejq only")
+    jq_bin = os.environ.get("JQ_BIN") or shutil.which("jq")
+    try:
+        import jq as jq_binding
+    except ImportError:
+        jq_binding = None
 
-    header = "%-55s %10s" % ("workload", "purejq")
-    if jq_bin:
-        header += " %10s %8s" % ("jq (C)", "ratio")
+    fd, data_file = tempfile.mkstemp(suffix=".json")
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f)
+    size_mb = os.path.getsize(data_file) / 1e6
+
+    # --- 1. in-process engine (pre-parsed data, pure filter evaluation) ----
+    print("\n## In-process engine (data already parsed)")
+    header = "%-32s %10s" % ("workload", "purejq")
+    if jq_binding:
+        header += " %12s %7s" % ("jq(C-ext)", "ratio")
     print(header)
     print("-" * len(header))
-    for program, label in WORKLOADS:
-        ours = bench_purejq(program, data)
-        line = "%-55s %9.0fms" % (label, ours * 1000)
-        if jq_bin:
-            theirs = bench_jq(jq_bin, program, data_file)
-            line += " %9.0fms %7.1fx" % (theirs * 1000, ours / theirs)
+    for program, label in ENGINE_WORKLOADS:
+        prog = purejq.compile(program)
+        ours = best_of(lambda: list(prog.run(data)))
+        line = "%-32s %8.0fms" % (label, ours * 1000)
+        if jq_binding:
+            cprog = jq_binding.compile(program)
+            theirs = best_of(lambda: cprog.input(data).all())
+            line += " %10.0fms %6.1fx" % (theirs * 1000, ours / theirs)
         print(line)
 
-    if data_file:
-        os.unlink(data_file)
+    # --- 2. end-to-end CLI (parse + filter + print, like real usage) -------
+    print("\n## End-to-end CLI on a %.0f MB file (parse + filter + output)" % size_mb)
+    cli_workloads = [
+        (".[42].name", "single lookup"),
+        ("[.[] | select(.score > 50)] | length", "filter + count"),
+        ("group_by(.team) | map(length)", "group_by"),
+    ]
+    purejq_cli = [sys.executable, "-m", "purejq.cli"]
+    header = "%-32s %10s" % ("workload", "purejq")
+    if jq_bin:
+        header += " %12s %7s" % ("jq (C)", "ratio")
+    print(header)
+    print("-" * len(header))
+    env = dict(os.environ, PYTHONPATH=os.path.join(ROOT, "src"))
+    for program, label in cli_workloads:
+        ours = best_of(lambda: subprocess.run(
+            purejq_cli + ["-c", program, data_file],
+            stdout=subprocess.DEVNULL, check=True, env=env))
+        line = "%-32s %8.0fms" % (label, ours * 1000)
+        if jq_bin:
+            theirs = best_of(lambda: subprocess.run(
+                [jq_bin, "-c", program, data_file],
+                stdout=subprocess.DEVNULL, check=True))
+            line += " %10.0fms %6.1fx" % (theirs * 1000, ours / theirs)
+        print(line)
+
+    # --- 3. JSON loading (this is where big files spend their time) --------
+    print("\n## Loading the %.0f MB file into Python" % size_mb)
+    with open(data_file) as f:
+        text = f.read()
+    t = best_of(lambda: json.loads(text))
+    print("%-32s %8.0fms  (%.0f MB/s)" % ("stdlib json (C-backed)", t * 1000, size_mb / t))
+    try:
+        import orjson
+        t = best_of(lambda: orjson.loads(text))
+        print("%-32s %8.0fms  (%.0f MB/s)" % ("orjson [purejq 'speed' extra]", t * 1000, size_mb / t))
+    except ImportError:
+        print("%-32s %10s" % ("orjson", "not installed"))
+
+    os.unlink(data_file)
 
 
 if __name__ == "__main__":
