@@ -65,7 +65,7 @@ def _enc(v, out, depth):
         out.append(format_number(v))
     elif isinstance(v, str):
         out.append(_escape_string(v))
-    elif depth >= MAX_PRINT_DEPTH:
+    elif depth > MAX_PRINT_DEPTH:
         out.append('"<skipped: too deep>"')
     elif isinstance(v, list):
         out.append("[")

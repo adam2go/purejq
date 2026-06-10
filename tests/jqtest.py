@@ -105,6 +105,14 @@ def load_all_cases():
     return cases
 
 
+# Cases that can crash the interpreter outright (C-stack exhaustion from
+# unbounded generator nesting) on Python versions without a C-stack guard.
+# jq passes these via its tail-call optimization, which purejq doesn't have yet.
+CRASH_SKIP = {
+    "man.test:654",  # [repeat(.*2, error)?] - infinite recursion before the error
+}
+
+
 def is_depth_bomb(case):
     """Cases that build ~10000-deep structures. CPython < 3.11 keeps Python
     frames on the C stack and PyPy has its own limits, so these are only

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/adam2go/purejq/actions/workflows/ci.yml/badge.svg)](https://github.com/adam2go/purejq/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.14%20%7C%20PyPy-blue)](https://github.com/adam2go/purejq/blob/main/.github/workflows/ci.yml)
-[![Conformance](https://img.shields.io/badge/jq%20test%20suite-96%25-brightgreen)](tests/conformance/expected_failures.txt)
+[![Conformance](https://img.shields.io/badge/jq%20test%20suite-96.2%25-brightgreen)](tests/conformance/expected_failures.txt)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A pure Python implementation of [jq](https://jqlang.github.io/jq/), the
@@ -77,7 +77,7 @@ next(it), next(it), next(it)                    # 2, 4, 8
 ## Conformance: measured, not claimed
 
 purejq is tested against **jq's own official test suite** (vendored in
-[tests/conformance/](tests/conformance/)): **750 of 781 cases pass (96.0%)**.
+[tests/conformance/](tests/conformance/)): **751 of 781 cases pass (96.2%)**.
 
 Every remaining failure is listed with its reason in
 [expected_failures.txt](tests/conformance/expected_failures.txt) and falls in
