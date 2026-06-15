@@ -1,0 +1,7 @@
+[
+  {"name": "Ada",   "team": "platform", "commits": 184, "active": true},
+  {"name": "Linus", "team": "kernel",   "commits": 421, "active": true},
+  {"name": "Grace", "team": "platform", "commits": 97,  "active": false},
+  {"name": "Alan",  "team": "kernel",   "commits": 312, "active": true},
+  {"name": "Edsger","team": "research", "commits": 56,  "active": true}
+]

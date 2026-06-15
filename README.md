@@ -10,6 +10,8 @@
 binary: if Python runs, purejq runs — Pyodide/WASM, sandboxes, Lambda,
 anywhere `pip install` is all you get.
 
+![purejq demo](demo/purejq.gif)
+
 ```sh
 pip install purejq
 ```

@@ -35,8 +35,11 @@ def _iter_json(text):
 
 
 def main(argv=None):
+    from . import __version__
     ap = argparse.ArgumentParser(
         prog="purejq", description="purejq - a pure Python implementation of jq")
+    ap.add_argument("-V", "--version", action="version",
+                    version="purejq %s" % __version__)
     ap.add_argument("program", nargs="?", default=None, help="jq filter to run")
     ap.add_argument("files", nargs="*", help="input files (default: stdin)")
     ap.add_argument("-n", "--null-input", action="store_true",
