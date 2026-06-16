@@ -7,7 +7,7 @@ from .errors import Halt, JqError, JqParseError
 from .parser import parse
 from .prelude import prelude_env
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 __all__ = ["compile", "Program", "first", "all_outputs",
            "JqError", "JqParseError", "Halt", "encode", "encode_pretty"]
 

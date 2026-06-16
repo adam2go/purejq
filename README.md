@@ -80,6 +80,18 @@ slower and still ahead on these workloads.*
 stdlib json (128 MB/s) or 0.43 s with orjson (219 MB/s) — input loading is
 C-speed either way and scales linearly.
 
+**Bigger than memory? Stream it.** `--stream` parses the input incrementally
+and emits jq's `[path, leaf]` events, so you can process a file far larger
+than RAM in roughly constant memory:
+
+```sh
+# rebuild and filter each record of a huge array, in constant memory
+purejq -n --stream 'fromstream(1|truncate_stream(inputs)) | select(.v > 0)' huge.json
+```
+
+On a 56 MB array of 2M records, reconstructing every element peaks at **22 MB
+RSS streaming vs 612 MB loading the whole array** — 28x less, same output.
+
 **PyPy** (100k objects, same code, no changes): filter + count 13 ms,
 map + aggregate 2 ms, group_by 33 ms, transform + sort 70 ms — roughly
 another 2–9x over CPython for heavy workloads.
@@ -104,8 +116,8 @@ Everything else is there: paths and all assignment operators,
 string interpolation, `@formats`, regex builtins, streaming
 (`tostream`/`fromstream`), dates, and jq 1.8 additions.
 
-CLI flags: `-n -r -R -j -c -s -S -a -e -f --indent --tab --arg --argjson`.
-Outputs are lazy iterators — `purejq.compile("repeat(. * 2)").run(1)` happily
+CLI flags: `-n -r -R -j -c -s -S -a -e -f --stream --indent --tab --arg
+--argjson`. Outputs are lazy iterators — `purejq.compile("repeat(. * 2)").run(1)` happily
 yields forever.
 
 ## Compatibility

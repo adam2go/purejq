@@ -91,3 +91,37 @@ def test_parse_error():
 def test_program_error():
     code, _ = run([".a"], "1")  # cannot index number
     assert code == 5
+
+
+def test_stream_flat_object():
+    code, out = run(["-c", "--stream", "."], '{"a":1,"b":2}')
+    assert code == 0
+    assert out == '[["a"],1]\n[["b"],2]\n[["b"]]\n'
+
+
+def test_stream_nested():
+    code, out = run(["-c", "--stream", "."], '{"a":[2,3]}')
+    assert out == '[["a",0],2]\n[["a",1],3]\n[["a",1]]\n[["a"]]\n'
+
+
+def test_stream_top_array():
+    code, out = run(["-c", "--stream", "."], "[2,3]")
+    assert out == "[[0],2]\n[[1],3]\n[[1]]\n"
+
+
+def test_stream_empty_containers():
+    assert run(["-c", "--stream", "."], "[]") == (0, "[[],[]]\n")
+    assert run(["-c", "--stream", "."], "{}") == (0, "[[],{}]\n")
+
+
+def test_stream_reconstruct():
+    # the canonical "huge array of records in constant memory" pattern:
+    # rebuild each element from its truncated event substream
+    code, out = run(["-cn", "--stream", "fromstream(1|truncate_stream(inputs))"],
+                    '[{"v":10},{"v":20}]')
+    assert code == 0 and out == '{"v":10}\n{"v":20}\n'
+
+
+def test_stream_multiple_values():
+    code, out = run(["-c", "--stream", "."], "1 [2]")
+    assert out == "[[],1]\n[[0],2]\n[[0]]\n"
