@@ -52,6 +52,16 @@ def main(argv=None):
                     help="compact instead of pretty-printed output")
     ap.add_argument("-s", "--slurp", action="store_true",
                     help="read all inputs into a single array")
+    ap.add_argument("-R", "--raw-input", action="store_true",
+                    help="read each line of input as a string (with -s, the whole input)")
+    ap.add_argument("-S", "--sort-keys", action="store_true",
+                    help="sort object keys in the output")
+    ap.add_argument("-a", "--ascii-output", action="store_true",
+                    help="escape non-ASCII characters as \\uXXXX")
+    ap.add_argument("--indent", type=int, default=2, metavar="N",
+                    help="number of spaces for indentation (0 = compact)")
+    ap.add_argument("--tab", action="store_true",
+                    help="indent with tabs instead of spaces")
     ap.add_argument("-e", "--exit-status", action="store_true",
                     help="set exit status by the last output value")
     ap.add_argument("-f", "--from-file", metavar="FILE",
@@ -95,21 +105,34 @@ def main(argv=None):
     else:
         text = ""
 
-    try:
-        values = list(_iter_json(text))
-    except ValueError as e:
-        print("purejq: invalid JSON input: %s" % e, file=sys.stderr)
-        return 2
+    if args.raw_input:
+        if args.slurp:
+            values = [text]
+        else:
+            values = text.split("\n")
+            if values and values[-1] == "":  # trailing newline isn't a record
+                values.pop()
+    else:
+        try:
+            values = list(_iter_json(text))
+        except ValueError as e:
+            print("purejq: invalid JSON input: %s" % e, file=sys.stderr)
+            return 2
 
     if args.null_input:
         runs = [(None, iter(values))]
     elif args.slurp:
-        runs = [(values, iter(()))]
+        # -s reads everything as one input: a string under -R, else an array.
+        slurped = values[0] if args.raw_input else values
+        runs = [(slurped, iter(()))]
     else:
         # Each value is one program run; `input`/`inputs` consume the rest.
         shared = iter(values)
         runs = _consume(shared)
 
+    sort_keys = args.sort_keys
+    ascii_out = args.ascii_output
+    compact = args.compact_output or args.indent == 0
     last = None
     had_output = False
     code = 0
@@ -121,10 +144,12 @@ def main(argv=None):
                 had_output = True
                 if (args.raw_output or args.join_output) and isinstance(result, str):
                     out.write(result)
-                elif args.compact_output:
-                    out.write(encode(result))
+                elif compact:
+                    out.write(encode(result, sort_keys=sort_keys, ascii=ascii_out))
                 else:
-                    out.write(encode_pretty(result))
+                    out.write(encode_pretty(result, indent=args.indent,
+                                            sort_keys=sort_keys, ascii=ascii_out,
+                                            tab=args.tab))
                 if not args.join_output:
                     out.write("\n")
     except JqError as e:

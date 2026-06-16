@@ -104,8 +104,9 @@ Everything else is there: paths and all assignment operators,
 string interpolation, `@formats`, regex builtins, streaming
 (`tostream`/`fromstream`), dates, and jq 1.8 additions.
 
-CLI flags: `-n -r -j -c -s -e -f --arg --argjson`. Outputs are lazy
-iterators — `purejq.compile("repeat(. * 2)").run(1)` happily yields forever.
+CLI flags: `-n -r -R -j -c -s -S -a -e -f --indent --tab --arg --argjson`.
+Outputs are lazy iterators — `purejq.compile("repeat(. * 2)").run(1)` happily
+yields forever.
 
 ## Compatibility
 
