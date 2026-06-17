@@ -12,6 +12,14 @@ _ASSIGN_OPS = frozenset(["=", "|=", "+=", "-=", "*=", "/=", "%=", "//="])
 _CMP_OPS = frozenset(["==", "!=", "<", "<=", ">", ">="])
 _LITERALS = {"true": True, "false": False, "null": None}
 
+# Cap on parser recursion. Both structural nesting ((), [], {}) and pipe
+# chains re-enter parse_pipe, so this one counter bounds them. Nesting costs
+# ~13 interpreter frames per level, so 64 trips at ~830 frames - comfortably
+# under CPython's default 1000 limit on every platform (including Windows'
+# ~1 MB stack), yet far above any real jq program. Adversarial input like
+# "[[[[..." raises a clean JqParseError instead of overflowing the C stack.
+MAX_DEPTH = 64
+
 
 def parse(source):
     p = Parser(lex(source))
@@ -25,6 +33,7 @@ class Parser:
         # >0 while parsing a reduce/foreach source, whose trailing `as`
         # belongs to the construct itself rather than to a binding.
         self.no_as = 0
+        self.depth = 0  # current parse_pipe recursion depth (bounded below)
 
     # --- token helpers -------------------------------------------------
     def peek(self):
@@ -216,6 +225,21 @@ class Parser:
 
     # --- primary expressions ---------------------------------------------
     def parse_primary(self):
+        # Every structural descent - (...), [...], {...}, and object values -
+        # bottoms out here and re-enters here for nested content, so guarding
+        # parse_primary bounds the deep, frame-expensive recursion that would
+        # otherwise overflow the C stack on input like "[[[[..." or "{a:{a:".
+        self.depth += 1
+        if self.depth > MAX_DEPTH:
+            self.depth -= 1
+            raise JqParseError("program nests too deeply (over %d levels)"
+                               % MAX_DEPTH)
+        try:
+            return self._parse_primary()
+        finally:
+            self.depth -= 1
+
+    def _parse_primary(self):
         t = self.peek()
         kind, value = t[0], t[1]
 

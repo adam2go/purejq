@@ -7,7 +7,7 @@ from .errors import Halt, JqError, JqParseError
 from .parser import parse
 from .prelude import prelude_env
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __all__ = ["compile", "Program", "first", "all_outputs",
            "JqError", "JqParseError", "Halt", "encode", "encode_pretty"]
 
@@ -17,10 +17,18 @@ class Program:
 
     def __init__(self, source):
         self.source = source
-        ast = parse(source)
-        prelude_env()  # built first so calls can be statically bound
-        with _names_ctx(frozenset(collect_defined_names(ast))):
-            self._vfn = compile_v(ast)
+        # The parser caps structural nesting at MAX_DEPTH, which trips well
+        # before any platform's stack limit, so deep input ("[[[[...") raises
+        # a clean parse error. This catch is a backstop for the remaining deep
+        # recursion (long flat pipe/operator chains compiled into a deep tree)
+        # so a RecursionError never escapes; valid programs never trigger it.
+        try:
+            ast = parse(source)
+            prelude_env()  # built first so calls can be statically bound
+            with _names_ctx(frozenset(collect_defined_names(ast))):
+                self._vfn = compile_v(ast)
+        except RecursionError:
+            raise JqParseError("program nests too deeply") from None
 
     def run(self, value=None, inputs=None, vars=None):
         """Run the program on one input value; returns an iterator of outputs."""

@@ -40,11 +40,16 @@ def lex(source):
             parts, i = _lex_string(source, i)
             tokens.append(("STR", parts, i))
             continue
-        if ch == "." and i + 1 < n and (source[i + 1].isalpha() or source[i + 1] == "_"):
+        if ch == ".":
+            # `.name` field access. _FIELD_RE only matches ASCII identifiers;
+            # a bare "." or ".<non-identifier>" (including Unicode letters like
+            # ".ä") falls through to be lexed as the "." operator, then errors
+            # if what follows is not valid - never crashes on a None match.
             m = _FIELD_RE.match(source, i)
-            tokens.append(("FIELD", m.group(1), m.end()))
-            i = m.end()
-            continue
+            if m is not None:
+                tokens.append(("FIELD", m.group(1), m.end()))
+                i = m.end()
+                continue
         m = _TOKEN_RE.match(source, i)
         if m is None:
             raise JqParseError("Unexpected character %r at position %d" % (ch, i))
@@ -71,6 +76,18 @@ def lex(source):
             tokens.append(("OP", text, i))
     tokens.append(("EOF", None, n))
     return tokens
+
+
+def _hex4(source, i, n):
+    """Parse exactly 4 hex digits at source[i:i+4]; JqParseError if invalid."""
+    if i + 4 > n:
+        raise JqParseError("Invalid \\u escape")
+    digits = source[i:i + 4]
+    try:
+        return int(digits, 16)
+    except ValueError:
+        raise JqParseError("Invalid \\u escape: %r is not 4 hex digits"
+                           % digits) from None
 
 
 def _lex_string(source, i):
@@ -108,12 +125,10 @@ def _lex_string(source, i):
             buf.append(_ESCAPES[esc])
             i += 2
         elif esc == "u":
-            if i + 6 > n:
-                raise JqParseError("Invalid \\u escape")
-            code = int(source[i + 2:i + 6], 16)
+            code = _hex4(source, i + 2, n)
             i += 6
             if 0xD800 <= code <= 0xDBFF and source[i:i + 2] == "\\u":
-                low = int(source[i + 2:i + 6], 16)
+                low = _hex4(source, i + 2, n)
                 if 0xDC00 <= low <= 0xDFFF:
                     code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
                     i += 6
